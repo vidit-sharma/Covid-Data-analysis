@@ -1,0 +1,393 @@
+---
+title: "COVID 19 Data Analysis"
+author: "Vidit Vivek Sharma"
+date: "21/09/2021"
+output:
+  pdf_document: default
+  word_document: default
+  html_document:
+    df_print: paged
+---
+
+```{r setup, include=FALSE,  message=FALSE}
+knitr::opts_chunk$set(echo=TRUE)
+library(tidyverse)
+library(ggrepel)
+library(lubridate)
+```
+
+# COVID 19 Analysis
+
+Let us start with the analysis that we did in the class with Jane Wall.
+
+We use this module to look at the steps in a data analysis in a reproducible manner using COVID-19 data. First we find some data sources.
+
+We look at the [nytimes]<https://github.com/nytimes/covid-19-data> and [Johns Hopkins University]<https://github.com/CSSEGISandData/COVID-19> github sites. After reviewing a little, we find that JHU gives more detail on their sources and data.
+
+## Step 1 - Identify and import the data
+
+We start by reading in the data from the four main csv files.
+
+```{r import_data}
+## Get current Data in the four files
+# they all begin the same way
+url_in <- "https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/csse_covid_19_time_series/time_series_covid19_"
+file_names <- c("confirmed_global.csv",
+                    "deaths_global.csv",
+                    "confirmed_US.csv",
+                    "deaths_US.csv")
+urls <- str_c(url_in,file_names)
+```
+
+Then we read in the data and see what we are working with.
+
+```{r read files}
+global_cases <- read_csv(urls[1], show_col_types = FALSE)
+global_deaths <- read_csv(urls[2], show_col_types = FALSE) 
+US_cases <- read_csv(urls[3], show_col_types = FALSE)
+US_deaths <- read_csv(urls[4], show_col_types = FALSE)
+```
+
+## Step 2 - Tidy up the data
+
+After looking at global_cases and global_deaths, we would like to tidy those datasets and put each variable (date, cases, deaths) in its own column. Also, we don't need Lat and Long for the analysis we are planning, so we get rid of those and rename Region and State to be more R friendly.
+
+```{r tidy_data_global}
+global_cases <- global_cases %>%
+    pivot_longer(cols = -c(`Province/State`,`Country/Region`, Lat, Long),  
+                 names_to = "date",values_to = "cases") %>%
+  select(-c(Lat,Long))
+
+global_deaths <- global_deaths %>%
+    pivot_longer(cols = -c(`Province/State`,
+                           `Country/Region`, Lat, Long), 
+                 names_to = "date", 
+               values_to = "deaths") %>%
+  select(-c(Lat, Long))
+
+  
+global <- global_cases %>% 
+  full_join(global_deaths) %>%
+  rename(Country_Region =`Country/Region`,Province_State =`Province/State`) %>%
+  mutate(date = mdy(date))
+```
+
+Lets look at the summary of the table we created.
+
+```{r summary}
+# look at a summary of the data to see if there are problems
+summary(global)
+```
+
+Removing cases where the cases are equal to zero.
+
+```{r filter_cases}
+# get rid of rows with no cases
+global <- global %>% filter(cases > 0)
+```
+
+```{r tidy_data_us}
+US_cases <- US_cases %>%
+    pivot_longer(cols = -(UID:Combined_Key), 
+                 names_to = "date", 
+                 values_to = "cases") %>%
+    select(Admin2:cases) %>%
+    mutate(date = mdy(date)) %>%
+  select(-c(Lat, Long_))
+ 
+US_deaths <- US_deaths %>%
+    pivot_longer(cols = -(UID:Population), 
+                 names_to = "date", 
+                 values_to ="deaths") %>%
+    select(Admin2:deaths) %>%
+    mutate(date = mdy(date)) %>%
+ select(-c(Lat, Long_))
+US <- US_cases %>% 
+  full_join(US_deaths)
+```
+
+We notice that we don't have population data for the world data. If we plan to do comparative analysis So we add population data and a variable called Combined_Key that combines the Province_State with the Country_Region
+
+```{r}
+global <- global %>% 
+  unite("Combined_Key", 
+                 c(Province_State, Country_Region), 
+                                   sep = ", ", 
+                 na.rm = TRUE, 
+                 remove = FALSE)
+```
+
+Let's add in population data to the global dataset.
+
+```{r golbal_population_data}
+uid_lookup_url <- "https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/UID_ISO_FIPS_LookUp_Table.csv"
+uid <- read_csv(uid_lookup_url) %>%
+  select(-c(Lat, Long_, Combined_Key, code3, iso2, iso3, Admin2))
+```
+
+```{r}
+global <- global %>% 
+  left_join(uid, by = c("Province_State", "Country_Region")) %>%
+  select(-c(UID, FIPS)) %>%
+  select(Province_State, Country_Region, date,
+         cases, deaths, Population,
+         Combined_Key)
+global
+```
+
+## Step 3 - Visualize the data
+
+Let's focus our analysis on the US data for now.
+
+Let's look at the total number of cases over time and the total deaths over time for the US as a whole and for a given state.
+
+```{r state_totals}
+US_by_state <- US %>%
+  group_by(Province_State,Country_Region,date)%>%
+  summarize(cases=sum(cases),deaths=sum(deaths),
+            Population=sum(Population))%>%
+  mutate(deaths_per_mill=deaths*1000000/Population)%>%
+  select(Province_State, Country_Region,date,
+         cases, deaths, deaths_per_mill,Population)%>%
+  ungroup()
+
+US_totals <- US_by_state %>%
+  group_by(Country_Region, date) %>%
+   summarize(cases = sum(cases), deaths = sum(deaths), 
+            Population = sum(Population)) %>%
+  mutate(deaths_per_mill = deaths *1000000 / Population) %>%
+  select(Country_Region, date,
+         cases, deaths, deaths_per_mill, Population) %>%
+  ungroup()
+```
+
+Lets plot the data for US as a whole.
+
+```{r plot_US}
+US_totals %>% 
+  filter(cases > 0) %>%
+  ggplot(aes(x = date, y = cases)) +
+    geom_line(aes(color = "cases")) +
+  geom_point(aes(color = "cases")) +
+  geom_line(aes(y = deaths, color = "deaths")) +
+  geom_point(aes(y = deaths, color = "deaths")) +
+    scale_y_log10() +
+    theme(legend.position="bottom",
+          axis.text.x = element_text(angle = 90)) +
+  labs(title = "COVID19 in US", y= NULL)
+
+```
+
+Lets plot the data for New York state.
+
+```{r plot_state}
+state <- "New York"
+US_by_state %>% 
+  filter(Province_State == state) %>%
+  filter(cases > 0) %>%
+  ggplot(aes(x = date, y = cases)) +
+    geom_line(aes(color = "cases")) +
+  geom_point(aes(color = "cases")) +
+  geom_line(aes(y = deaths, color = "deaths")) +
+  geom_point(aes(y = deaths, color = "deaths")) +
+    scale_y_log10() +
+    theme(legend.position="bottom",
+          axis.text.x = element_text(angle = 90)) +
+  labs(title = str_c("COVID19 in ", state), y= NULL)
+  
+```
+
+## Step 4 - Analyse the data
+
+So our graph looks like COVID has leveled off.Lets look at the number of new cases and deaths per day.
+
+```{r new cases}
+US_by_state <- US_by_state %>%
+  mutate(new_cases = cases - lag(cases), 
+  new_deaths = deaths - lag(deaths))
+US_totals <- US_totals %>%
+  mutate(new_cases = cases - lag(cases), 
+  new_deaths = deaths - lag(deaths))
+
+
+```
+
+Lets Visualize the number of new cases and deaths per day to see if that raises new questions.
+
+```{r plot_new_us}
+US_totals %>%
+  ggplot(aes(x = date, y = new_cases)) +
+    geom_line(aes(color = "new_cases")) +
+  geom_point(aes(color = "new_cases")) +
+  geom_line(aes(y = new_deaths, color = "new_deaths")) +
+  geom_point(aes(y = new_deaths, color = "new_deaths")) +
+    scale_y_log10() +
+    theme(legend.position="bottom",
+          axis.text.x = element_text(angle = 90)) +
+  labs(title = "COVID19 in US", y= NULL)
+```
+
+```{r plot_new_NY}
+state <- "New York"
+US_by_state %>% 
+  filter(Province_State == state) %>%
+  ggplot(aes(x = date, y = new_cases)) +
+    geom_line(aes(color = "new_cases")) +
+  geom_point(aes(color = "new_cases")) +
+  geom_line(aes(y = new_deaths, color = "new_deaths")) +
+  geom_point(aes(y = new_deaths, color = "new_deaths")) +
+    scale_y_log10() +
+    theme(legend.position="bottom",
+          axis.text.x = element_text(angle = 90)) +
+  labs(title = str_c("COVID19 in ", state), y= NULL)
+```
+
+Which are the worst and best states? How to measure this? Perhaps look at case rates and death rates per 1000 people?
+
+```{r state_total}
+US_state_totals <- US_by_state %>% 
+  group_by(Province_State) %>%
+  summarize(deaths = max(deaths), cases = max(cases),
+            population = max(Population), 
+            cases_per_thou = 1000* cases / population,
+            deaths_per_thou = 1000 * deaths / population) %>% 
+  filter(cases > 0, population > 0) 
+US_state_totals %>%
+  slice_min(deaths_per_thou, n = 10)
+```
+
+```{r}
+US_state_totals %>% 
+  slice_max(deaths_per_thou, n = 10)
+```
+
+## Step 5 - Model the data
+
+We might need to introduce more variables here to build a model. Which do you want to consider? Population density, extent of lockdown, political affiliation, climate of the area? When you determine the factors you want to try, add that data to your dataset, and then visualize and model and see if your variable has a statistically significant effect.
+
+```{r model data}
+mod <- lm(deaths_per_thou ~ cases_per_thou, data = US_state_totals)
+summary(mod)
+```
+
+```{r}
+US_state_totals %>% slice_min(cases_per_thou)
+US_state_totals %>% slice_max(cases_per_thou)
+```
+
+```{r}
+x_grid <- seq(1, 151)
+new_df <- tibble(cases_per_thou = x_grid)
+US_state_totals %>% mutate(pred = predict(mod))
+```
+
+Let us use the model to predict the State total cases and also plot the actual data for comparision.
+
+```{r}
+US_tot_w_pred <- US_state_totals %>% mutate(pred = predict(mod))
+US_tot_w_pred %>% ggplot() +
+geom_point(aes(x = cases_per_thou, y = deaths_per_thou), color = "blue") +
+geom_point(aes(x = cases_per_thou, y = pred), color = "red")
+```
+
+From the above graph we can see that the there is more concentration towards the prediction line as compared to the rest of the graph. 
+
+## Step 6 - Additional Analysis (Beyond what is done in the class)
+
+Ratio of death and cases can be used to comment on the medical infrastructure of a country or State? First we need to analyse the number of deaths and cases.
+
+Let us take a look at the number of cases compared to the population and also to the number of death versus the number of cases of a country or a state. This could help us understand the extent of medical infrastructure in the  country or state.
+
+Lets first take a look at the global data for percentage of cases and the percentages of deaths compared to the population.
+
+```{r global_per}
+global_total <- global %>% 
+  group_by(Country_Region) %>%
+  summarize(deaths = max(deaths), cases = max(cases),
+            population = max(Population), 
+            cases_percentage = (cases / population)*100,
+            deaths_percentage = (deaths / population)*100,
+            death_cases_per =(deaths / cases)*100) %>% 
+  filter(cases > 0, population > 0) 
+```
+
+Lets plot the cases_percentage and deaths_percentage for the global data.
+
+```{r plot_g_per}
+global_total %>% 
+  ggplot(aes(x = cases_percentage, y = deaths_percentage )) +
+  geom_point(color="blue")+ geom_label_repel(aes(label = Country_Region),  
+                                             box.padding=0.35,  
+                                             point.padding = 0.5,  
+                                             segment.color = 'grey50')
+```
+
+Lets do the same thing for US state data.
+
+```{r us_per}
+US_total <- US_by_state %>% 
+  group_by(Province_State) %>%
+  summarize(deaths = max(deaths), cases = max(cases),
+            population = max(Population), 
+            cases_percentage = (cases / population)*100,
+            deaths_percentage = (deaths / population)*100,
+            death_cases_per =(deaths / cases)*100) %>% 
+  filter(cases > 0, population > 0)
+```
+
+```{r plot_us_per}
+US_total %>% 
+  ggplot(aes(x = cases_percentage, y = deaths_percentage )) +
+  geom_point(color="blue")+ geom_label_repel(aes(label = Province_State),  
+                                             box.padding=0.35,  
+                                             point.padding = 0.5,  
+                                             segment.color = 'grey50')
+  
+```
+
+The above graphs show us the relation between the cases_percentage and deaths_percentage.
+
+Now let us take look at the death to cases percentage with countries that have population greater than 1 million to find out the top 10 worst countries. 
+
+
+```{r}
+global_total %>% 
+  filter(population>1000000)%>%
+  select(Country_Region,deaths,cases,population,death_cases_per)%>%
+  slice_max(death_cases_per, n = 10)
+  
+```
+
+Now let us find the top 10 worst states in US. Here worst state refer to the states where the percentage of death to cases is maximum. Here we also take the states with the populations greater than 10000 to exclude the islands and other smaller states with very small population.
+
+```{r}
+US_total %>% 
+  filter(population>10000)%>%
+  select(Province_State,deaths,cases,population,death_cases_per)%>%
+  slice_max(death_cases_per, n = 10)
+```
+
+Here we can build a model on the bases of death to cases percentage with the population of the US state
+
+```{r model_data}
+mod1 <- lm(death_cases_per~population, data = US_total)
+summary(mod1)
+```
+
+# Conclusion
+
+From the various graphs we can see that Covid cases and deaths follow a similar trends. although the scale of the graph is logarithmic, we can see that the pecks are the times when a specific wave is going on and the number of cases are reduction because of the people getting vaccinated.
+
+ALso according to the above analysis, we can say that the states with a higher death to cases percentage have a lower medical infrastructure compared to the ones that have a lesser. As the states with lower death to cases percentage, here the people got better medical care and their better treatment led to a speedy recovery. Thus the states with higher death to cases percentage, couldn't provide better medical care and that might be one of the reasons for a higher death count.
+
+## Possible sources of bias
+ 
+Here we need to take a look at the possible sources of bias as there can be reports with data that already have a bias and also those whole introduce a bias while in the report.
+
+Here one of the possible sources of the bias is the data source , as we do not know that how the data is being calculated had how it is being reported.
+Another possible source of bias can be the medical data reported, we have come across various cases where the cases are under reported or the cause of death has been stated as something else although Covid with the reason the patient went into that state.
+Another possible source of bias is the percentage of population that was too scared to get them self tested for covid 19 when their first symptoms stated to emerge.
+Another possible source of bias can be me, as I have developed the report based on my understanding thus a bias in my understand can get translated into the report.
+
+
+
